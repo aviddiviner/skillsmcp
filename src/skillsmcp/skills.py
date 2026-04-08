@@ -114,13 +114,70 @@ def _skill_roots() -> list[Path]:
     ]
 
 
+def _try_register_skill(
+    skill_dir: Path,
+    skills: dict[str, SkillInfo],
+) -> bool:
+    """Try to register a single skill directory.
+
+    If *skill_dir* contains a ``SKILL.md``, parse it and add it to *skills*
+    (first-found wins).
+
+    Returns:
+        ``True`` if a skill was found (even if it was a duplicate), ``False``
+        if no ``SKILL.md`` exists in the directory.
+    """
+    skill_file = skill_dir / SKILL_FILENAME
+    if not skill_file.is_file():
+        return False
+
+    try:
+        metadata, _body = parse_skill_frontmatter(skill_file)
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", skill_file, exc)
+        return True  # file exists but unreadable — don't recurse
+
+    # Determine the skill name: prefer frontmatter, fall back to dir name
+    name = metadata.get("name", "").strip() or skill_dir.name
+    description = metadata.get("description", "").strip()
+
+    if name in skills:
+        logger.debug(
+            "Skill %r already discovered at %s; ignoring duplicate at %s",
+            name,
+            skills[name].path,
+            skill_file,
+        )
+        return True
+
+    skills[name] = SkillInfo(
+        name=name,
+        description=description,
+        path=skill_file,
+        base_dir=skill_dir,
+    )
+    logger.debug("Discovered skill %r at %s", name, skill_file)
+    return True
+
+
 def discover_skills(roots: list[Path] | None = None) -> dict[str, SkillInfo]:
     """Scan *roots* for SKILL.md files and return a dict keyed by skill name.
 
     Each immediate sub-directory of a root that contains a ``SKILL.md`` is
-    treated as a skill.  The skill's ``name`` comes from the frontmatter (with
-    a fallback to the directory name), and the first skill found for a given
-    name wins (so project-level skills shadow user-level ones).
+    treated as a skill.  If a sub-directory does *not* contain a ``SKILL.md``
+    it is treated as a **group directory** (e.g. a plugin like ``superpowers``)
+    and its own immediate children are scanned for skills.  This allows
+    structures like::
+
+        ~/.agents/skills/
+        ├── my-skill/SKILL.md            # flat skill — discovered directly
+        └── superpowers/                  # group directory (no SKILL.md)
+            ├── brainstorming/SKILL.md    # nested skill — discovered via group
+            └── debugging/SKILL.md
+
+    The skill's ``name`` comes from the frontmatter (with a fallback to the
+    directory name), and the first skill found for a given name wins (so
+    project-level skills shadow user-level ones).
 
     Args:
         roots: Directories to scan.  If ``None``, the default set from
@@ -143,36 +200,18 @@ def discover_skills(roots: list[Path] | None = None) -> dict[str, SkillInfo]:
             if not child.is_dir():
                 continue
 
-            skill_file = child / SKILL_FILENAME
-            if not skill_file.is_file():
-                logger.debug("No %s in %s, skipping", SKILL_FILENAME, child)
+            # First, try to register the directory as a skill directly.
+            if _try_register_skill(child, skills):
                 continue
 
-            try:
-                metadata, _body = parse_skill_frontmatter(skill_file)
-            except OSError as exc:
-                logger.warning("Could not read %s: %s", skill_file, exc)
-                continue
-
-            # Determine the skill name: prefer frontmatter, fall back to dir name
-            name = metadata.get("name", "").strip() or child.name
-            description = metadata.get("description", "").strip()
-
-            if name in skills:
-                logger.debug(
-                    "Skill %r already discovered at %s; ignoring duplicate at %s",
-                    name,
-                    skills[name].path,
-                    skill_file,
-                )
-                continue
-
-            skills[name] = SkillInfo(
-                name=name,
-                description=description,
-                path=skill_file,
-                base_dir=child,
+            # No SKILL.md — treat as a group directory and scan one level deeper.
+            logger.debug(
+                "No %s in %s, scanning as group directory", SKILL_FILENAME, child
             )
-            logger.debug("Discovered skill %r at %s", name, skill_file)
+            for grandchild in sorted(child.iterdir()):
+                if not grandchild.is_dir():
+                    continue
+                if not _try_register_skill(grandchild, skills):
+                    logger.debug("No %s in %s, skipping", SKILL_FILENAME, grandchild)
 
     return skills
