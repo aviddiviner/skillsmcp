@@ -14,7 +14,19 @@ Install with Homebrew:
 brew install uv
 ```
 
-## Usage
+## Install
+
+```
+uv tool install git+https://github.com/aviddiviner/skillsmcp.git
+```
+
+This installs `skillsmcp` as a command on your PATH. To update later:
+
+```
+uv tool upgrade skillsmcp
+```
+
+## Configure
 
 ### Zed
 
